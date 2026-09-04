@@ -1,0 +1,10 @@
+[project]
+name = "commit-lint"
+version = "1.0.0"
+description = "Conventional commit message linter — pure Python stdlib"
+authors = [{ name = "v01dst" }]
+license = "MIT"
+requires-python = ">=3.10"
+
+[project.scripts]
+commit-lint = "commit_lint:main"
