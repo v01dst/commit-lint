@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -37,24 +39,44 @@ class LintResult:
     errors: list[str]
     warnings: list[str]
     parsed: dict | None
+    types: dict[str, str] | None = None
 
     @property
     def type(self) -> str | None:
         return self.parsed["type"] if self.parsed else None
 
 
-def lint(message: str) -> LintResult:
+def load_types(config_path: str | None = None) -> dict[str, str]:
+    """Load type registry, merging extra types from a config file if present."""
+    types = dict(TYPES)
+    path = config_path or os.environ.get("COMMIT_LINT_CONFIG")
+    if path and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            extra = data.get("types", {})
+            if isinstance(extra, dict):
+                for t, desc in extra.items():
+                    if re.fullmatch(r"[a-z][a-z-]{0,20}", str(t)):
+                        types[str(t)] = str(desc)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return types
+
+
+def lint(message: str, types: dict[str, str] | None = None) -> LintResult:
     errors: list[str] = []
     warnings: list[str] = []
+    types = types or TYPES
 
     if not message.strip():
-        return LintResult(False, ["message is empty"], [], None)
+        return LintResult(False, ["message is empty"], [], None, types)
 
     lines = message.rstrip("\n").split("\n")
     header = lines[0]
 
     if header.startswith("Merge "):
-        return LintResult(True, [], [], {"type": "merge", "subject": header})
+        return LintResult(True, [], [], {"type": "merge", "subject": header}, types)
 
     if len(header) > MAX_HEADER:
         errors.append(f"header must be <= {MAX_HEADER} chars (got {len(header)})")
@@ -68,14 +90,14 @@ def lint(message: str) -> LintResult:
             'format must be "type[(scope)]: subject" or "type(scope)!: subject" — '
             f'e.g. "feat(auth): add login"'
         )
-        return LintResult(False, errors, warnings, None)
+        return LintResult(False, errors, warnings, None, types)
 
     parsed = m.groupdict()
     ctype = parsed["type"]
 
-    if ctype not in TYPES:
+    if ctype not in types:
         errors.append(
-            f"unknown type '{ctype}' — allowed: {', '.join(sorted(TYPES))}"
+            f"unknown type '{ctype}' — allowed: {', '.join(sorted(types))}"
         )
 
     subject = parsed["subject"]
@@ -98,7 +120,7 @@ def lint(message: str) -> LintResult:
         if len(line) > 100:
             warnings.append(f"body line {i + 2} exceeds 100 chars (got {len(line)})")
 
-    return LintResult(not errors, errors, warnings, parsed)
+    return LintResult(not errors, errors, warnings, parsed, types)
 
 
 def format_report(result: LintResult, message: str) -> str:
@@ -109,7 +131,7 @@ def format_report(result: LintResult, message: str) -> str:
     for w in result.warnings:
         out.append(f"  warning: {w}")
     if result.parsed and result.parsed.get("type") not in (None, "merge"):
-        desc = TYPES.get(result.parsed["type"], "")
+        desc = (result.types or TYPES).get(result.parsed["type"], "")
         scope = result.parsed.get("scope")
         out.append(f"  type:    {result.parsed['type']} ({desc})")
         if scope:
@@ -136,17 +158,25 @@ def main(argv: list[str] | None = None) -> int:
         print("error: provide a message or a file containing the message", file=sys.stderr)
         return 2
 
+    types = load_types(next((f for f in files if f.endswith(".json") and os.path.isfile(f)), None))
+
     messages: list[str] = []
     for f in files:
+        if f.endswith(".json") and os.path.isfile(f):
+            continue
         try:
             with open(f, encoding="utf-8") as fh:
                 messages.append(fh.read())
         except OSError:
             messages.append(f)
 
+    if not messages:
+        print("error: no messages to lint", file=sys.stderr)
+        return 2
+
     failures = 0
     for msg in messages:
-        result = lint(msg)
+        result = lint(msg, types)
         if strict and result.warnings:
             result.ok = False
             result.errors.extend(result.warnings)

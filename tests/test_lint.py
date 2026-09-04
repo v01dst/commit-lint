@@ -84,3 +84,55 @@ class FormatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class CustomTypesTests(unittest.TestCase):
+    def setUp(self):
+        import json, tempfile, os
+        self.tmp = tempfile.mkdtemp()
+        self.config = os.path.join(self.tmp, "types.json")
+        with open(self.config, "w") as f:
+            json.dump({"types": {"wip": "work in progress", "spike": "exploration"}}, f)
+
+    def test_custom_type_accepted_with_config(self):
+        from commit_lint import load_types
+        types = load_types(self.config)
+        r = lint("wip: half done feature", types)
+        self.assertTrue(r.ok)
+        r2 = lint("spike: try new cache", types)
+        self.assertTrue(r2.ok)
+
+    def test_custom_type_rejected_without_config(self):
+        r = lint("wip: half done feature")
+        self.assertFalse(r.ok)
+
+    def test_env_var_config(self):
+        import os
+        from commit_lint import load_types
+        old = os.environ.get("COMMIT_LINT_CONFIG")
+        os.environ["COMMIT_LINT_CONFIG"] = self.config
+        try:
+            types = load_types(None)
+            self.assertIn("wip", types)
+        finally:
+            if old is None:
+                del os.environ["COMMIT_LINT_CONFIG"]
+            else:
+                os.environ["COMMIT_LINT_CONFIG"] = old
+
+    def test_invalid_config_entries_ignored(self):
+        import json
+        from commit_lint import load_types
+        bad = self.config + ".bad"
+        with open(bad, "w") as f:
+            json.dump({"types": {"BAD TYPE": "x", 123: "y", "ok-type": "fine"}}, f)
+        types = load_types(bad)
+        self.assertNotIn("BAD TYPE", types)
+        self.assertIn("ok-type", types)
+
+    def test_main_with_config_file(self):
+        import os
+        msg = os.path.join(self.tmp, "msg.txt")
+        with open(msg, "w") as f:
+            f.write("wip: half done feature\n")
+        code = main(["--config" if False else self.config, msg])
+        self.assertEqual(code, 0)
