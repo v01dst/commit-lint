@@ -40,10 +40,25 @@ class LintResult:
     warnings: list[str]
     parsed: dict | None
     types: dict[str, str] | None = None
+    scopes: set[str] | None = None
 
     @property
     def type(self) -> str | None:
         return self.parsed["type"] if self.parsed else None
+
+
+def load_config_file(config_path: str | None = None) -> dict:
+    """Read the lint config json, tolerating missing/invalid files."""
+    path = config_path or os.environ.get("COMMIT_LINT_CONFIG")
+    if path and os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
 
 
 def load_types(config_path: str | None = None) -> dict[str, str]:
@@ -64,19 +79,19 @@ def load_types(config_path: str | None = None) -> dict[str, str]:
     return types
 
 
-def lint(message: str, types: dict[str, str] | None = None) -> LintResult:
+def lint(message: str, types: dict[str, str] | None = None, scopes: set[str] | None = None) -> LintResult:
     errors: list[str] = []
     warnings: list[str] = []
     types = types or TYPES
 
     if not message.strip():
-        return LintResult(False, ["message is empty"], [], None, types)
+        return LintResult(False, ["message is empty"], [], None, types, scopes)
 
     lines = message.rstrip("\n").split("\n")
     header = lines[0]
 
     if header.startswith("Merge "):
-        return LintResult(True, [], [], {"type": "merge", "subject": header}, types)
+        return LintResult(True, [], [], {"type": "merge", "subject": header}, types, scopes)
 
     if len(header) > MAX_HEADER:
         errors.append(f"header must be <= {MAX_HEADER} chars (got {len(header)})")
@@ -90,7 +105,7 @@ def lint(message: str, types: dict[str, str] | None = None) -> LintResult:
             'format must be "type[(scope)]: subject" or "type(scope)!: subject" — '
             f'e.g. "feat(auth): add login"'
         )
-        return LintResult(False, errors, warnings, None, types)
+        return LintResult(False, errors, warnings, None, types, scopes)
 
     parsed = m.groupdict()
     ctype = parsed["type"]
@@ -98,6 +113,12 @@ def lint(message: str, types: dict[str, str] | None = None) -> LintResult:
     if ctype not in types:
         errors.append(
             f"unknown type '{ctype}' — allowed: {', '.join(sorted(types))}"
+        )
+
+    scope = parsed.get("scope")
+    if scopes is not None and scope is not None and scope not in scopes:
+        errors.append(
+            f"unknown scope '{scope}' — allowed: {', '.join(sorted(scopes))}"
         )
 
     subject = parsed["subject"]
@@ -120,7 +141,7 @@ def lint(message: str, types: dict[str, str] | None = None) -> LintResult:
         if len(line) > 100:
             warnings.append(f"body line {i + 2} exceeds 100 chars (got {len(line)})")
 
-    return LintResult(not errors, errors, warnings, parsed, types)
+    return LintResult(not errors, errors, warnings, parsed, types, scopes)
 
 
 def format_report(result: LintResult, message: str) -> str:
@@ -158,7 +179,12 @@ def main(argv: list[str] | None = None) -> int:
         print("error: provide a message or a file containing the message", file=sys.stderr)
         return 2
 
+    cfg = load_config_file(next((f for f in files if f.endswith(".json") and os.path.isfile(f)), None))
     types = load_types(next((f for f in files if f.endswith(".json") and os.path.isfile(f)), None))
+    scopes = None
+    raw_scopes = cfg.get("scopes")
+    if isinstance(raw_scopes, list) and raw_scopes:
+        scopes = {str(x) for x in raw_scopes}
 
     messages: list[str] = []
     for f in files:
@@ -176,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
 
     failures = 0
     for msg in messages:
-        result = lint(msg, types)
+        result = lint(msg, types, scopes)
         if strict and result.warnings:
             result.ok = False
             result.errors.extend(result.warnings)

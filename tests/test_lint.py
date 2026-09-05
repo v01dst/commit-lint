@@ -136,3 +136,40 @@ class CustomTypesTests(unittest.TestCase):
             f.write("wip: half done feature\n")
         code = main(["--config" if False else self.config, msg])
         self.assertEqual(code, 0)
+
+class ScopeWhitelistTests(unittest.TestCase):
+    def setUp(self):
+        import json, tempfile, os
+        self.tmp = tempfile.mkdtemp()
+        self.config = os.path.join(self.tmp, "cfg.json")
+        with open(self.config, "w") as f:
+            json.dump({"scopes": ["api", "web", "core"]}, f)
+
+    def test_allowed_scope_passes(self):
+        from commit_lint import load_config_file, load_types
+        cfg = load_config_file(self.config)
+        types = load_types(self.config)
+        scopes = {str(x) for x in cfg["scopes"]}
+        r = lint("fix(api): handle null cursor", types, scopes)
+        self.assertTrue(r.ok)
+
+    def test_disallowed_scope_fails(self):
+        from commit_lint import load_config_file, load_types
+        cfg = load_config_file(self.config)
+        types = load_types(self.config)
+        scopes = {str(x) for x in cfg["scopes"]}
+        r = lint("fix(db): wrong scope", types, scopes)
+        self.assertFalse(r.ok)
+        self.assertTrue(any("unknown scope 'db'" in e for e in r.errors))
+
+    def test_no_scope_still_passes(self):
+        from commit_lint import load_config_file, load_types
+        cfg = load_config_file(self.config)
+        types = load_types(self.config)
+        scopes = {str(x) for x in cfg["scopes"]}
+        r = lint("chore: routine maintenance", types, scopes)
+        self.assertTrue(r.ok)
+
+    def test_no_whitelist_means_any_scope(self):
+        r = lint("fix(anything-goes): fine")
+        self.assertTrue(r.ok)
